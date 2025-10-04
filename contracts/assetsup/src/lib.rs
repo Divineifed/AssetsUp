@@ -270,7 +270,7 @@ impl AssetUpContract {
         // Verify asset exists
         let asset_key = asset::DataKey::Asset(asset_id.clone());
         let store = env.storage().persistent();
-        let asset: asset::Asset = match store.get(&asset_key) {
+        let _asset: asset::Asset = match store.get(&asset_key) {
             Some(a) => a,
             None => return Err(Error::AssetNotFound),
         };
