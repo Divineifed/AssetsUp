@@ -4,6 +4,7 @@ use crate::error::{Error, handle_error};
 use soroban_sdk::{Address, BytesN, Env, String, Vec, contract, contractimpl, contracttype};
 
 pub(crate) mod asset;
+pub(crate) mod audit_log;
 pub(crate) mod branch;
 pub(crate) mod error;
 pub(crate) mod errors;
@@ -203,6 +204,137 @@ impl AssetUpContract {
         a.stellar_token_id = token_id;
         store.set(&key, &a);
         Ok(())
+    }
+
+    /// Log an audit action for an asset (called by asset owner).
+    ///
+    /// Access: Only the asset owner can call this.
+    pub fn log_audit_action_as_owner(
+        env: Env,
+        asset_id: BytesN<32>,
+        action: String,
+        details: String,
+    ) -> Result<(), Error> {
+        // Verify asset exists
+        let asset_key = asset::DataKey::Asset(asset_id.clone());
+        let store = env.storage().persistent();
+        let asset: asset::Asset = match store.get(&asset_key) {
+            Some(a) => a,
+            None => return Err(Error::AssetNotFound),
+        };
+
+        // Access control: Only asset owner can log actions
+        asset.owner.require_auth();
+
+        // Generate unique log ID using asset_id, timestamp, and action length
+        let timestamp = env.ledger().timestamp();
+        let action_len = action.len() as u64;
+        let mut id_data: soroban_sdk::Bytes = asset_id.clone().into();
+        id_data.extend_from_slice(&timestamp.to_le_bytes());
+        id_data.extend_from_slice(&action_len.to_le_bytes());
+        let log_id: BytesN<32> = env.crypto().sha256(&id_data).into();
+
+        // Create audit log entry
+        let audit_log = audit_log::AuditLog {
+            id: log_id.clone(),
+            asset_id: asset_id.clone(),
+            action,
+            timestamp: env.ledger().timestamp(),
+            actor: asset.owner.clone(),
+            details,
+        };
+
+        // Store the audit log
+        let log_key = audit_log::DataKey::AuditLog(log_id.clone());
+        store.set(&log_key, &audit_log);
+
+        // Add to asset's audit log list
+        let asset_logs_key = audit_log::DataKey::AuditLogsByAsset(asset_id);
+        let mut logs: Vec<BytesN<32>> =
+            store.get(&asset_logs_key).unwrap_or_else(|| Vec::new(&env));
+        logs.push_back(log_id);
+        store.set(&asset_logs_key, &logs);
+
+        Ok(())
+    }
+
+    /// Log an audit action for an asset (called by global admin).
+    ///
+    /// Access: Only the global admin can call this.
+    pub fn log_audit_action_as_admin(
+        env: Env,
+        asset_id: BytesN<32>,
+        action: String,
+        details: String,
+    ) -> Result<(), Error> {
+        // Verify asset exists
+        let asset_key = asset::DataKey::Asset(asset_id.clone());
+        let store = env.storage().persistent();
+        let asset: asset::Asset = match store.get(&asset_key) {
+            Some(a) => a,
+            None => return Err(Error::AssetNotFound),
+        };
+
+        // Access control: Only global admin can log actions
+        let global_admin = Self::get_admin(env.clone())?;
+        global_admin.require_auth();
+
+        // Generate unique log ID using asset_id, timestamp, and action length
+        let timestamp = env.ledger().timestamp();
+        let action_len = action.len() as u64;
+        let mut id_data: soroban_sdk::Bytes = asset_id.clone().into();
+        id_data.extend_from_slice(&timestamp.to_le_bytes());
+        id_data.extend_from_slice(&action_len.to_le_bytes());
+        let log_id: BytesN<32> = env.crypto().sha256(&id_data).into();
+
+        // Create audit log entry
+        let audit_log = audit_log::AuditLog {
+            id: log_id.clone(),
+            asset_id: asset_id.clone(),
+            action,
+            timestamp: env.ledger().timestamp(),
+            actor: global_admin.clone(),
+            details,
+        };
+
+        // Store the audit log
+        let log_key = audit_log::DataKey::AuditLog(log_id.clone());
+        store.set(&log_key, &audit_log);
+
+        // Add to asset's audit log list
+        let asset_logs_key = audit_log::DataKey::AuditLogsByAsset(asset_id);
+        let mut logs: Vec<BytesN<32>> =
+            store.get(&asset_logs_key).unwrap_or_else(|| Vec::new(&env));
+        logs.push_back(log_id);
+        store.set(&asset_logs_key, &logs);
+
+        Ok(())
+    }
+
+    /// Get audit logs for a specific asset.
+    ///
+    /// Access: Anyone can read audit logs (they are public records).
+    pub fn get_asset_audit_logs(
+        env: Env,
+        asset_id: BytesN<32>,
+    ) -> Result<Vec<audit_log::AuditLog>, Error> {
+        let asset_logs_key = audit_log::DataKey::AuditLogsByAsset(asset_id);
+        let store = env.storage().persistent();
+
+        let log_ids: Vec<BytesN<32>> = match store.get(&asset_logs_key) {
+            Some(ids) => ids,
+            None => return Ok(Vec::new(&env)),
+        };
+
+        let mut logs = Vec::new(&env);
+        for log_id in log_ids.iter() {
+            let log_key = audit_log::DataKey::AuditLog(log_id.clone());
+            if let Some(log) = store.get(&log_key) {
+                logs.push_back(log);
+            }
+        }
+
+        Ok(logs)
     }
 }
 
